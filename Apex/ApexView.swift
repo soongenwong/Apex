@@ -44,35 +44,40 @@ struct Secrets {
 }
 
 
-// MARK: - ViewModel with Real AI Logic
+// MARK: - ViewModel with Real AI Logic & Streak Tracking
 class DashboardViewModel: ObservableObject {
+    // --- (Existing @Published properties are unchanged) ---
     @Published var sleepHours: Double = 7.5
     @Published var mealSummary: String = ""
     @Published var workoutSummary: String = ""
-    
     @Published var healthScore: Int = 0
     @Published var morningBriefing: String = "Log your daily data and tap 'Generate Briefing' to get your personalized health insights."
     @Published var isLoading: Bool = false
     
-    // This is the core AI function, now making a real network call.
-    // It's marked as `async` to perform network operations.
-    @MainActor // Ensures UI updates happen on the main thread
+    // --- NEW: Published property for the UI to display the streak ---
+    @Published var streakCount: Int = 0
+    
+    // --- NEW: UserDefaults keys for persistence ---
+    private let streakCountKey = "streakCount"
+    private let lastBriefingDateKey = "lastBriefingDateKey"
+    
+    // --- NEW: Load the streak when the ViewModel is created ---
+    init() {
+        loadStreak()
+    }
+    
+    @MainActor
     func generateBriefing() async {
-        // 1. Start loading state and guard for API Key
         isLoading = true
         guard let apiKey = Secrets.groqApiKey else {
-            morningBriefing = "Error: Groq API Key not found in Secrets.plist. Please check your setup."
+            morningBriefing = "Error: GROQ_API_KEY not found in Secrets.plist."
             isLoading = false
             return
         }
         
-        // 2. Calculate the Health Score (can be done before the API call)
         calculateHealthScore()
-        
-        // 3. Construct the prompt for the AI
         let prompt = createPrompt()
         
-        // 4. Set up the network request
         guard let url = URL(string: "https://api.groq.com/openai/v1/chat/completions") else {
             morningBriefing = "Error: Invalid API URL."
             isLoading = false
@@ -100,13 +105,14 @@ class DashboardViewModel: ObservableObject {
             return
         }
         
-        // 5. Perform the API call and handle the response
         do {
             let (data, _) = try await URLSession.shared.data(for: request)
             let decodedResponse = try JSONDecoder().decode(GroqResponse.self, from: data)
             
             if let responseContent = decodedResponse.choices.first?.message.content {
                 morningBriefing = responseContent.trimmingCharacters(in: .whitespacesAndNewlines)
+                // --- NEW: Update the streak only on a successful API call ---
+                updateStreak()
             } else {
                 morningBriefing = "Received an empty response from the AI. Please try again."
             }
@@ -115,11 +121,62 @@ class DashboardViewModel: ObservableObject {
             morningBriefing = "Error fetching AI briefing: \(error.localizedDescription)"
         }
         
-        // 6. End loading state
         isLoading = false
     }
     
-    // Helper to calculate the score. This logic is unchanged.
+    // --- NEW: Logic to load the streak from UserDefaults ---
+    private func loadStreak() {
+        let storedStreak = UserDefaults.standard.integer(forKey: streakCountKey)
+        guard let lastDate = UserDefaults.standard.object(forKey: lastBriefingDateKey) as? Date else {
+            // If there's no date, there's no streak.
+            self.streakCount = 0
+            return
+        }
+        
+        // Check if the last briefing was yesterday or today. If it was older, the streak is broken.
+        if !Calendar.current.isDateInYesterday(lastDate) && !Calendar.current.isDateInToday(lastDate) {
+            self.streakCount = 0
+            UserDefaults.standard.set(0, forKey: streakCountKey) // Also reset in storage
+        } else {
+            self.streakCount = storedStreak
+        }
+    }
+    
+    // --- NEW: Logic to check and update the streak ---
+    private func updateStreak() {
+        let today = Date()
+        let calendar = Calendar.current
+        
+        guard let lastDate = UserDefaults.standard.object(forKey: lastBriefingDateKey) as? Date else {
+            // This is the very first briefing. Start the streak at 1.
+            self.streakCount = 1
+            saveStreak(count: 1, date: today)
+            return
+        }
+        
+        // If a briefing was already generated today, do nothing.
+        if calendar.isDate(today, inSameDayAs: lastDate) {
+            return
+        }
+        
+        // If the last briefing was yesterday, increment the streak.
+        if calendar.isDateInYesterday(lastDate) {
+            streakCount += 1
+        } else {
+            // If more than a day has passed, reset the streak to 1.
+            streakCount = 1
+        }
+        
+        saveStreak(count: streakCount, date: today)
+    }
+    
+    // --- NEW: Helper function to save to UserDefaults ---
+    private func saveStreak(count: Int, date: Date) {
+        UserDefaults.standard.set(count, forKey: streakCountKey)
+        UserDefaults.standard.set(date, forKey: lastBriefingDateKey)
+    }
+    
+    // --- (Existing helper functions are unchanged) ---
     private func calculateHealthScore() {
         var score = 0
         let sleepScore = min(40, (self.sleepHours / 8.0) * 40)
@@ -129,7 +186,6 @@ class DashboardViewModel: ObservableObject {
         self.healthScore = min(100, score)
     }
     
-    // Helper to build a clear prompt from user inputs.
     private func createPrompt() -> String {
         let nutritionLog = mealSummary.isEmpty ? "No food logged." : mealSummary
         let fitnessLog = workoutSummary.isEmpty ? "No workout logged." : workoutSummary
@@ -147,7 +203,6 @@ class DashboardViewModel: ObservableObject {
 
 
 // MARK: - Main View (ApexView)
-// The only change here is in the Button's action.
 
 struct ApexView: View {
     @StateObject private var viewModel = DashboardViewModel()
@@ -156,6 +211,21 @@ struct ApexView: View {
         NavigationView {
             ScrollView {
                 VStack(alignment: .leading, spacing: 25) {
+                    
+                    // --- NEW: Streak Count Display ---
+                    // Placed right below the navigation title area.
+                    HStack {
+                        Spacer()
+                        Image(systemName: "flame.fill")
+                        Text("\(viewModel.streakCount)")
+                        Spacer()
+                    }
+                    .font(.subheadline)
+                    .fontWeight(.bold)
+                    .foregroundColor(.orange)
+                    .padding(4)
+                    
+                    // --- (The rest of the view is unchanged) ---
                     
                     BriefingCardView(
                         score: viewModel.healthScore,
@@ -183,8 +253,6 @@ struct ApexView: View {
                         }
                     }
                     
-                    // --- ACTION BUTTON (CHANGED) ---
-                    // The action now runs inside a `Task` to handle the `async` function.
                     Button(action: {
                         Task {
                             await viewModel.generateBriefing()
