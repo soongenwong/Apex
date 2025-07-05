@@ -11,7 +11,7 @@ import SwiftUI
 struct ApexApp: App {
     var body: some Scene {
         WindowGroup {
-            ApexView()
+            MainTabView()
         }
     }
 }

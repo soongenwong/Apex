@@ -1,42 +1,59 @@
 import SwiftUI
 internal import Combine
-// No need to import Combine anymore, we'll use modern async/await
 
-// MARK: - Groq API Data Models
-// These structs match the JSON structure for the Groq API request and response.
+// MARK: - App's Main Entry Point
+// The app now starts with a TabView that holds all the main sections.
+
+struct MainTabView: View {
+    var body: some View {
+        TabView {
+            // Tab 1: The original dashboard
+            DashboardView()
+                .tabItem {
+                    Label("Dashboard", systemImage: "square.grid.2x2.fill")
+                }
+            
+            // Tab 2: The new Journaling Guide feature
+            JournalingGuideView()
+                .tabItem {
+                    Label("Sleep", systemImage: "bed.double.fill")
+                }
+            
+            // Tab 3: Placeholder for Nutrition
+            NutritionView()
+                .tabItem {
+                    Label("Nutrition", systemImage: "fork.knife")
+                }
+            
+            // Tab 4: Placeholder for Fitness
+            FitnessView()
+                .tabItem {
+                    Label("Fitness", systemImage: "figure.run")
+                }
+        }
+        .accentColor(.blue) // Sets the color for the active tab icon
+    }
+}
+
+
+// MARK: - Groq API Models & Secrets (Unchanged)
 
 struct GroqRequest: Codable {
     let messages: [GroqMessage]
     let model: String
-    let temperature: Double = 0.7 // Controls randomness: 0.0 is deterministic, 1.0 is creative
-    let max_tokens: Int = 200     // Limit the length of the response
+    let temperature: Double = 0.7
+    let max_tokens: Int = 200
 }
-
-struct GroqMessage: Codable {
-    let role: String // "user" or "system"
-    let content: String
-}
-
-struct GroqResponse: Codable {
-    let choices: [GroqChoice]
-}
-
-struct GroqChoice: Codable {
-    let message: ResponseMessage
-}
-
-struct ResponseMessage: Codable {
-    let content: String
-}
-
-// MARK: - API Key Loader
-// A helper to safely load the key from Secrets.plist
+struct GroqMessage: Codable { let role: String; let content: String }
+struct GroqResponse: Codable { let choices: [GroqChoice] }
+struct GroqChoice: Codable { let message: ResponseMessage }
+struct ResponseMessage: Codable { let content: String }
 
 struct Secrets {
     static var groqApiKey: String? {
         guard let path = Bundle.main.path(forResource: "Secrets", ofType: "plist"),
               let dict = NSDictionary(contentsOfFile: path) as? [String: AnyObject] else {
-            print("Error: Secrets.plist not found or could not be read.")
+            print("Error: Secrets.plist not found.")
             return nil
         }
         return dict["GROQ_API_KEY"] as? String
@@ -44,28 +61,25 @@ struct Secrets {
 }
 
 
-// MARK: - ViewModel with Real AI Logic & Streak Tracking
+// MARK: - Section 1: Dashboard View & ViewModel (Previously ApexView)
+
 class DashboardViewModel: ObservableObject {
-    // --- (Existing @Published properties are unchanged) ---
     @Published var sleepHours: Double = 7.5
     @Published var mealSummary: String = ""
     @Published var workoutSummary: String = ""
     @Published var healthScore: Int = 0
     @Published var morningBriefing: String = "Log your daily data and tap 'Generate Briefing' to get your personalized health insights."
     @Published var isLoading: Bool = false
-    
-    // --- NEW: Published property for the UI to display the streak ---
     @Published var streakCount: Int = 0
     
-    // --- NEW: UserDefaults keys for persistence ---
     private let streakCountKey = "streakCount"
     private let lastBriefingDateKey = "lastBriefingDateKey"
     
-    // --- NEW: Load the streak when the ViewModel is created ---
     init() {
         loadStreak()
     }
     
+    // ... (All functions like generateBriefing, loadStreak, etc. are unchanged)
     @MainActor
     func generateBriefing() async {
         isLoading = true
@@ -74,202 +88,95 @@ class DashboardViewModel: ObservableObject {
             isLoading = false
             return
         }
-        
         calculateHealthScore()
         let prompt = createPrompt()
-        
-        guard let url = URL(string: "https://api.groq.com/openai/v1/chat/completions") else {
-            morningBriefing = "Error: Invalid API URL."
-            isLoading = false
-            return
-        }
-        
+        guard let url = URL(string: "https://api.groq.com/openai/v1/chat/completions") else { return }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
-        let requestBody = GroqRequest(
-            messages: [
-                GroqMessage(role: "system", content: "You are Apex, a helpful and encouraging health assistant. Your job is to analyze the user's sleep, nutrition, and fitness logs to create a holistic, connected 'Morning Briefing'. Be concise, positive, and insightful. Connect the different inputs together. For example, 'Your solid sleep likely gave you the energy for that strong workout.'"),
-                GroqMessage(role: "user", content: prompt)
-            ],
-            model: "llama3-8b-8192"
-        )
-        
+        let requestBody = GroqRequest(messages: [GroqMessage(role: "system", content: "You are Apex, a helpful health assistant. Analyze user logs for a 'Morning Briefing'. Be concise, positive, and connect the inputs."), GroqMessage(role: "user", content: prompt)], model: "llama3-8b-8192")
         do {
             request.httpBody = try JSONEncoder().encode(requestBody)
-        } catch {
-            morningBriefing = "Error: Failed to encode request: \(error.localizedDescription)"
-            isLoading = false
-            return
-        }
-        
-        do {
             let (data, _) = try await URLSession.shared.data(for: request)
             let decodedResponse = try JSONDecoder().decode(GroqResponse.self, from: data)
-            
             if let responseContent = decodedResponse.choices.first?.message.content {
                 morningBriefing = responseContent.trimmingCharacters(in: .whitespacesAndNewlines)
-                // --- NEW: Update the streak only on a successful API call ---
                 updateStreak()
-            } else {
-                morningBriefing = "Received an empty response from the AI. Please try again."
-            }
-            
-        } catch {
-            morningBriefing = "Error fetching AI briefing: \(error.localizedDescription)"
-        }
-        
+            } else { morningBriefing = "Empty AI response." }
+        } catch { morningBriefing = "Error: \(error.localizedDescription)" }
         isLoading = false
     }
-    
-    // --- NEW: Logic to load the streak from UserDefaults ---
     private func loadStreak() {
         let storedStreak = UserDefaults.standard.integer(forKey: streakCountKey)
-        guard let lastDate = UserDefaults.standard.object(forKey: lastBriefingDateKey) as? Date else {
-            // If there's no date, there's no streak.
-            self.streakCount = 0
-            return
-        }
-        
-        // Check if the last briefing was yesterday or today. If it was older, the streak is broken.
+        guard let lastDate = UserDefaults.standard.object(forKey: lastBriefingDateKey) as? Date else { self.streakCount = 0; return }
         if !Calendar.current.isDateInYesterday(lastDate) && !Calendar.current.isDateInToday(lastDate) {
             self.streakCount = 0
-            UserDefaults.standard.set(0, forKey: streakCountKey) // Also reset in storage
-        } else {
-            self.streakCount = storedStreak
-        }
+            UserDefaults.standard.set(0, forKey: streakCountKey)
+        } else { self.streakCount = storedStreak }
     }
-    
-    // --- NEW: Logic to check and update the streak ---
     private func updateStreak() {
         let today = Date()
-        let calendar = Calendar.current
-        
         guard let lastDate = UserDefaults.standard.object(forKey: lastBriefingDateKey) as? Date else {
-            // This is the very first briefing. Start the streak at 1.
-            self.streakCount = 1
-            saveStreak(count: 1, date: today)
-            return
+            streakCount = 1; saveStreak(count: 1, date: today); return
         }
-        
-        // If a briefing was already generated today, do nothing.
-        if calendar.isDate(today, inSameDayAs: lastDate) {
-            return
-        }
-        
-        // If the last briefing was yesterday, increment the streak.
-        if calendar.isDateInYesterday(lastDate) {
-            streakCount += 1
-        } else {
-            // If more than a day has passed, reset the streak to 1.
-            streakCount = 1
-        }
-        
+        if Calendar.current.isDate(today, inSameDayAs: lastDate) { return }
+        if Calendar.current.isDateInYesterday(lastDate) { streakCount += 1 } else { streakCount = 1 }
         saveStreak(count: streakCount, date: today)
     }
-    
-    // --- NEW: Helper function to save to UserDefaults ---
     private func saveStreak(count: Int, date: Date) {
         UserDefaults.standard.set(count, forKey: streakCountKey)
         UserDefaults.standard.set(date, forKey: lastBriefingDateKey)
     }
-    
-    // --- (Existing helper functions are unchanged) ---
     private func calculateHealthScore() {
-        var score = 0
-        let sleepScore = min(40, (self.sleepHours / 8.0) * 40)
-        score += Int(sleepScore)
+        var score = 0; let sleepScore = min(40, (self.sleepHours / 8.0) * 40); score += Int(sleepScore)
         if !self.mealSummary.trimmingCharacters(in: .whitespaces).isEmpty { score += 30 }
         if !self.workoutSummary.trimmingCharacters(in: .whitespaces).isEmpty { score += 30 }
         self.healthScore = min(100, score)
     }
-    
     private func createPrompt() -> String {
         let nutritionLog = mealSummary.isEmpty ? "No food logged." : mealSummary
         let fitnessLog = workoutSummary.isEmpty ? "No workout logged." : workoutSummary
-        
-        return """
-        Here is my data for today:
-        - Sleep: \(String(format: "%.1f", sleepHours)) hours
-        - Nutrition: \(nutritionLog)
-        - Fitness: \(fitnessLog)
-
-        Please generate my morning briefing based on this.
-        """
+        return "Sleep: \(String(format: "%.1f", sleepHours)) hours\nNutrition: \(nutritionLog)\nFitness: \(fitnessLog)"
     }
 }
 
-
-// MARK: - Main View (ApexView)
-
-struct ApexView: View {
+struct DashboardView: View {
     @StateObject private var viewModel = DashboardViewModel()
     
     var body: some View {
+        // Each tab gets its own NavigationView
         NavigationView {
             ScrollView {
                 VStack(alignment: .leading, spacing: 25) {
-                    
-                    // --- NEW: Streak Count Display ---
-                    // Placed right below the navigation title area.
                     HStack {
                         Spacer()
                         Image(systemName: "flame.fill")
                         Text("\(viewModel.streakCount)")
                         Spacer()
                     }
-                    .font(.subheadline)
-                    .fontWeight(.bold)
-                    .foregroundColor(.orange)
-                    .padding(4)
+                    .font(.subheadline).fontWeight(.bold).foregroundColor(.orange).padding(.top, 4)
                     
-                    // --- (The rest of the view is unchanged) ---
-                    
-                    BriefingCardView(
-                        score: viewModel.healthScore,
-                        briefing: viewModel.morningBriefing,
-                        isLoading: viewModel.isLoading
-                    )
+                    BriefingCardView(score: viewModel.healthScore, briefing: viewModel.morningBriefing, isLoading: viewModel.isLoading)
                     
                     VStack(spacing: 20) {
                         LoggingModuleView(title: "Sleep", systemImageName: "bed.double.fill") {
                             VStack {
-                                Text("\(String(format: "%.1f", viewModel.sleepHours)) hours")
-                                    .font(.headline)
+                                Text("\(String(format: "%.1f", viewModel.sleepHours)) hours").font(.headline)
                                 Slider(value: $viewModel.sleepHours, in: 0...12, step: 0.5)
                             }
                         }
-                        
                         LoggingModuleView(title: "Nutrition", systemImageName: "fork.knife") {
-                            TextField("e.g., Oatmeal, Chicken Salad, Salmon", text: $viewModel.mealSummary, axis: .vertical)
-                                .textFieldStyle(.roundedBorder)
+                            TextField("e.g., Oatmeal, Chicken Salad", text: $viewModel.mealSummary, axis: .vertical).textFieldStyle(.roundedBorder)
                         }
-                        
                         LoggingModuleView(title: "Fitness", systemImageName: "figure.run") {
-                            TextField("e.g., 3-mile run, 45 min weightlifting", text: $viewModel.workoutSummary, axis: .vertical)
-                                .textFieldStyle(.roundedBorder)
+                            TextField("e.g., 3-mile run", text: $viewModel.workoutSummary, axis: .vertical).textFieldStyle(.roundedBorder)
                         }
                     }
-                    
-                    Button(action: {
-                        Task {
-                            await viewModel.generateBriefing()
-                        }
-                    }) {
-                        Text(viewModel.isLoading ? "Analyzing..." : "Generate Briefing")
-                            .font(.headline)
-                            .foregroundColor(.white)
-                            .frame(maxWidth: .infinity)
-                            .padding()
-                            .background(Color.blue)
-                            .cornerRadius(12)
-                    }
-                    .disabled(viewModel.isLoading)
-                    
-                }
-                .padding()
+                    Button(action: { Task { await viewModel.generateBriefing() } }) {
+                        Text(viewModel.isLoading ? "Analyzing..." : "Generate Briefing").font(.headline).foregroundColor(.white).frame(maxWidth: .infinity).padding().background(Color.blue).cornerRadius(12)
+                    }.disabled(viewModel.isLoading)
+                }.padding()
             }
             .navigationTitle("Apex Dashboard")
             .background(Color(.systemGroupedBackground).edgesIgnoringSafeArea(.all))
@@ -278,8 +185,165 @@ struct ApexView: View {
 }
 
 
+// MARK: - Section 2: NEW Journaling Guide View & ViewModel
+
+class JournalingViewModel: ObservableObject {
+    @Published var userProblem: String = ""
+    @Published var generatedQuestions: String = "Describe a problem or challenge you're facing to receive guided journaling questions.\n\nThis can help clear your mind before sleep."
+    @Published var isLoading: Bool = false
+    
+    @MainActor
+    func generateQuestions() async {
+        guard !userProblem.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            generatedQuestions = "Please enter a problem or topic to get started."
+            return
+        }
+        
+        isLoading = true
+        guard let apiKey = Secrets.groqApiKey else {
+            generatedQuestions = "Error: GROQ_API_KEY not found."
+            isLoading = false
+            return
+        }
+        
+        guard let url = URL(string: "https://api.groq.com/openai/v1/chat/completions") else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        
+        let requestBody = GroqRequest(
+            messages: [
+                GroqMessage(role: "system", content: "You are a journaling guide. The user is stuck on a problem. Your task is to provide a sequence of exactly three powerful, open-ended questions to help them clarify their thoughts and identify a potential next step. Do not answer the question for them. Just provide the three questions."),
+                GroqMessage(role: "user", content: userProblem)
+            ],
+            model: "llama3-8b-8192"
+        )
+        
+        do {
+            request.httpBody = try JSONEncoder().encode(requestBody)
+            let (data, _) = try await URLSession.shared.data(for: request)
+            let decodedResponse = try JSONDecoder().decode(GroqResponse.self, from: data)
+            if let responseContent = decodedResponse.choices.first?.message.content {
+                generatedQuestions = responseContent.trimmingCharacters(in: .whitespacesAndNewlines)
+            } else { generatedQuestions = "The AI returned an empty response. Please try again." }
+        } catch {
+            generatedQuestions = "Error fetching questions: \(error.localizedDescription)"
+        }
+        
+        isLoading = false
+    }
+}
+
+struct JournalingGuideView: View {
+    @StateObject private var viewModel = JournalingViewModel()
+    
+    var body: some View {
+        NavigationView {
+            ScrollView {
+                VStack(spacing: 24) {
+                    // Input Section
+                    VStack(alignment: .leading) {
+                        Text("Describe your challenge")
+                            .font(.headline)
+                        TextEditor(text: $viewModel.userProblem)
+                            .frame(height: 100)
+                            .padding(4)
+                            .background(Color(.secondarySystemGroupedBackground))
+                            .cornerRadius(8)
+                            .shadow(color: .black.opacity(0.1), radius: 1)
+                    }
+                    
+                    // Action Button
+                    Button(action: {
+                        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil) // Dismiss keyboard
+                        Task { await viewModel.generateQuestions() }
+                    }) {
+                        Label(viewModel.isLoading ? "Generating..." : "Get my Questions", systemImage: "sparkles")
+                            .font(.headline)
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                            .background(Color.purple)
+                            .cornerRadius(12)
+                    }
+                    .disabled(viewModel.isLoading)
+                    
+                    // AI Response Section
+                    VStack(alignment: .leading, spacing: 15) {
+                        Text("Your Guided Questions")
+                            .font(.headline)
+                        if viewModel.isLoading {
+                            ProgressView()
+                                .frame(maxWidth: .infinity)
+                                .padding()
+                        } else {
+                            Text(viewModel.generatedQuestions)
+                                .font(.body)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                    .padding()
+                    .background(Color(.secondarySystemGroupedBackground))
+                    .cornerRadius(16)
+                    .shadow(color: .black.opacity(0.1), radius: 5, y: 2)
+                    
+                    Spacer()
+                }
+                .padding()
+            }
+            .navigationTitle("Journaling Guide")
+            .background(Color(.systemGroupedBackground).edgesIgnoringSafeArea(.all))
+        }
+    }
+}
+
+
+// MARK: - Section 3 & 4: Placeholder Views
+
+struct NutritionView: View {
+    var body: some View {
+        NavigationView {
+            VStack {
+                Image(systemName: "fork.knife.circle.fill")
+                    .font(.system(size: 60))
+                    .foregroundColor(.green)
+                Text("Nutrition Hub")
+                    .font(.largeTitle)
+                    .padding()
+                Text("Track meals, find recipes, and analyze your diet here in the future.")
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal)
+                    .foregroundColor(.secondary)
+            }
+            .navigationTitle("Nutrition")
+        }
+    }
+}
+
+struct FitnessView: View {
+    var body: some View {
+        NavigationView {
+            VStack {
+                Image(systemName: "figure.run.circle.fill")
+                    .font(.system(size: 60))
+                    .foregroundColor(.red)
+                Text("Fitness Center")
+                    .font(.largeTitle)
+                    .padding()
+                Text("Log workouts, follow plans, and monitor your progress here in the future.")
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal)
+                    .foregroundColor(.secondary)
+            }
+            .navigationTitle("Fitness")
+        }
+    }
+}
+
 // MARK: - Reusable UI Components (Unchanged)
 
+#if true // Use a conditional to easily paste the unchanged views
 struct BriefingCardView: View {
     let score: Int
     let briefing: String
@@ -355,12 +419,11 @@ struct LoggingModuleView<Content: View>: View {
         .shadow(color: .black.opacity(0.05), radius: 3, y: 1)
     }
 }
-
+#endif
 
 // MARK: - Preview
-
-struct ApexView_Previews: PreviewProvider {
+struct MainTabView_Previews: PreviewProvider {
     static var previews: some View {
-        ApexView()
+        MainTabView()
     }
 }
